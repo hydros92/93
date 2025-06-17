@@ -57,6 +57,28 @@ validate_env_vars()
 app = Flask(__name__)
 bot = telebot.TeleBot(TOKEN)
 
+# --- 4.1. НАЛАШТУВАННЯ МЕРЕЖЕВИХ ЗАПИТІВ (RETRY-МЕХАНІЗМ) ---
+# Додано для підвищення стабільності бота. Цей блок автоматично
+# повторює запити до Telegram API у випадку тимчасових мережевих проблем
+# (наприклад, ConnectionResetError, таймаути), які ви спостерігали в логах.
+try:
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    retry_strategy = Retry(
+        total=3,  # Загальна кількість спроб
+        status_forcelist=[429, 500, 502, 503, 504],  # HTTP коди, при яких повторювати
+        allowed_methods=frozenset(['HEAD', 'GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'TRACE']), # Методи для повторення
+        backoff_factor=1,  # Затримка між спробами (1с, 2с, 4с)
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session = telebot.apihelper._get_req_session()
+    session.mount("https://", adapter)
+    logger.info("Мережевий адаптер з механізмом повторних спроб успішно налаштовано.")
+except ImportError:
+    logger.warning("Не вдалося імпортувати 'requests' або 'urllib3'. Механізм повторних спроб не активовано.")
+
+
 # --- 5. Декоратор для обробки помилок ---
 def error_handler(func):
     def wrapper(*args, **kwargs):
@@ -185,7 +207,6 @@ user_data = {}
 # --- 8. Допоміжні функції ---
 @error_handler
 def save_user(message, referrer_id=None):
-    # ... (код без змін)
     user = message.from_user
     chat_id = message.chat.id
     
@@ -193,18 +214,15 @@ def save_user(message, referrer_id=None):
     if not conn: return
     try:
         with conn.cursor() as cur:
-            # Перевіряємо, чи користувач вже існує
             cur.execute("SELECT chat_id, referrer_id FROM users WHERE chat_id = %s;", (chat_id,))
             existing_user = cur.fetchone()
 
             if existing_user:
-                # Оновлюємо існуючого користувача
                 cur.execute("""
                     UPDATE users SET username = %s, first_name = %s, last_name = %s, last_activity = CURRENT_TIMESTAMP
                     WHERE chat_id = %s;
                 """, (user.username, user.first_name, user.last_name, chat_id))
             else:
-                # Створюємо нового користувача
                 cur.execute("""
                     INSERT INTO users (chat_id, username, first_name, last_name, referrer_id)
                     VALUES (%s, %s, %s, %s, %s)
@@ -221,7 +239,6 @@ def save_user(message, referrer_id=None):
 
 @error_handler
 def is_user_blocked(chat_id):
-    # ... (код без змін)
     conn = get_db_connection()
     if not conn: return True
     try:
@@ -234,7 +251,6 @@ def is_user_blocked(chat_id):
             conn.close()
 
 def generate_hashtags(description, num_hashtags=5):
-    # ... (код без змін)
     words = re.findall(r'\b\w+\b', description.lower())
     stopwords = set([
         'я', 'ми', 'ти', 'ви', 'він', 'вона', 'воно', 'вони', 'це', 'що',
@@ -251,7 +267,6 @@ def generate_hashtags(description, num_hashtags=5):
     return " ".join(hashtags)
 
 def log_statistics(action, user_id=None, product_id=None, details=None):
-    # ... (код без змін)
     conn = get_db_connection()
     if not conn: return
     try:
@@ -268,13 +283,11 @@ def log_statistics(action, user_id=None, product_id=None, details=None):
             conn.close()
 
 # --- 9. Інтеграція з Gemini AI ---
-# ... (код залишається без змін)
 @error_handler
 def get_gemini_response(prompt, conversation_history=None):
     if not GEMINI_API_KEY:
         logger.warning("Gemini API ключ не налаштований. Використовується заглушка.")
         return generate_elon_style_response(prompt)
-    # ... (решта коду без змін)
     headers = { "Content-Type": "application/json" }
     system_prompt = "Ти - AI помічник для Telegram бота продажу товарів. Відповідай в стилі Ілона Маска: прямолінійно, з гумором, іноді саркастично, але завжди корисно. Використовуй емодзі. Будь лаконічним, але інформативним. Допомагай з питаннями про товари, покупки, продажі, переговори. Відповідай українською мовою."
     gemini_messages = [{"role": "user", "parts": [{"text": system_prompt}]}]
@@ -299,13 +312,11 @@ def get_gemini_response(prompt, conversation_history=None):
         return generate_elon_style_response(prompt)
 
 def generate_elon_style_response(prompt):
-    # ... (код без змін)
     responses = [ "🚀 Гм, цікаве питання! Як і з SpaceX, тут потрібен системний підхід. Що саме вас цікавить?", "⚡ Очевидно! Як кажуть в Tesla - простота це вершина складності. Давайте розберемося.", "🤖 *думає як Neuralink* Ваше питання активувало мої нейрони! Ось що я думаю...", "🎯 Як і з X (колишній Twitter), іноді краще бути прямолінійним. Скажіть конкретніше?", "🔥 Хмм, це нагадує мені час, коли ми запускали Falcon Heavy. Складно, але можливо!", "💡 Ах, класика! Як і з Hyperloop - спочатку здається неможливим, потім очевидним." ]
     return random.choice(responses)
 
 @error_handler
 def save_conversation(chat_id, message_text, sender_type, product_id=None):
-    # ... (код без змін)
     conn = get_db_connection()
     if not conn: return
     try:
@@ -317,7 +328,6 @@ def save_conversation(chat_id, message_text, sender_type, product_id=None):
 
 @error_handler
 def get_conversation_history(chat_id, limit=5):
-    # ... (код без змін)
     conn = get_db_connection()
     if not conn: return []
     try:
@@ -344,7 +354,6 @@ cancel_button = types.KeyboardButton("❌ Скасувати")
 @bot.message_handler(commands=['start'])
 @error_handler
 def send_welcome(message):
-    # ... (код без змін)
     chat_id = message.chat.id
     if is_user_blocked(chat_id):
         bot.send_message(chat_id, "❌ Ваш акаунт заблоковано.")
@@ -366,7 +375,6 @@ def send_welcome(message):
 @bot.message_handler(commands=['admin'])
 @error_handler
 def admin_panel(message):
-    # ... (код без змін)
     if message.chat.id != ADMIN_CHAT_ID: return
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -379,7 +387,6 @@ def admin_panel(message):
     bot.send_message(message.chat.id, "🔧 *Адмін-панель*", reply_markup=markup, parse_mode='Markdown')
 
 # --- 12. Потік додавання товару ---
-# ... (код з попередньої версії залишається без значних змін, оскільки він працював коректно)
 ADD_PRODUCT_STEPS = {
     1: {'name': 'waiting_name', 'prompt': "📝 *Крок 1/6: Назва товару*\n\nВведіть назву:", 'next_step': 2, 'prev_step': None},
     2: {'name': 'waiting_price', 'prompt': "💰 *Крок 2/6: Ціна*\n\nВведіть ціну (наприклад, `500 грн` або `Договірна`):", 'next_step': 3, 'prev_step': 1},
@@ -396,7 +403,6 @@ def start_add_product_flow(message):
     send_product_step_message(chat_id)
     log_statistics('start_add_product', chat_id)
 
-# ... (решта функцій потоку додавання товару залишається без змін)
 @error_handler
 def send_product_step_message(chat_id):
     if chat_id not in user_data or user_data[chat_id].get('flow') != 'add_product': return
@@ -559,7 +565,6 @@ def handle_messages(message):
 @error_handler
 def handle_ai_chat(message):
     """Обробляє повідомлення в режимі AI чату."""
-    # ... (код без змін)
     chat_id = message.chat.id
     user_text = message.text
     if user_text.lower() == "скасувати" or user_text == "❌ Скасувати":
@@ -618,7 +623,6 @@ def send_my_products(message):
                 url = f"https://t.me/c/{channel_link_part}/{prod['channel_message_id']}"
                 markup.add(types.InlineKeyboardButton("👀 Переглянути", url=url))
                 
-                # Логіка для переопублікації
                 republish_limit = 3
                 can_republish = False
                 today = datetime.now(timezone.utc).date()
@@ -645,7 +649,6 @@ def send_my_products(message):
 
 @error_handler
 def send_favorites(message):
-    # ... (код без змін)
     chat_id = message.chat.id
     conn = get_db_connection()
     if not conn: return
@@ -669,7 +672,6 @@ def send_favorites(message):
 
 @error_handler
 def send_help_message(message):
-    # ... (код без змін)
     help_text = "🆘 *Довідка*\n\n🤖 Я ваш AI-помічник. Ось що я вмію:\n📦 *Додати товар* - створити оголошення.\n📋 *Мої товари* - керувати вашими товарами.\n⭐ *Обрані* - переглянути товари, які ви лайкнули.\n📺 *Наш канал* - переглянути всі пропозиції.\n🤖 *AI Помічник* - поспілкуватися з AI.\n\n✍️ *Правила сервісу*:\n– Доставку оплачує *покупець*.\n– Комісію сервісу сплачує *продавець*.\n\nЯкщо виникли технічні проблеми, зверніться до адміністратора."
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("💰 Детальніше про комісію", callback_data="show_commission_info"))
@@ -677,7 +679,6 @@ def send_help_message(message):
 
 @error_handler
 def send_commission_info(call):
-    # ... (код без змін)
     commission_rate_percent = 10
     text = f"💰 *Інформація про комісію*\n\nЗа успішний продаж товару через нашого бота стягується комісія у розмірі **{commission_rate_percent}%** від ціни продажу.\n\nКомісію сплачує *продавець*. Після того, як ви позначите товар як 'Продано', система розрахує суму.\n\nРеквізити для сплати (Monobank):\n`{MONOBANK_CARD_NUMBER}`\n\nСплачуйте комісію вчасно, щоб уникнути обмежень."
     bot.answer_callback_query(call.id)
@@ -750,7 +751,6 @@ def callback_inline(call):
 # --- 16. Логіка модерації та керування товарами ---
 @error_handler
 def handle_product_moderation_callbacks(call):
-    # ... (код без змін)
     if call.message.chat.id != ADMIN_CHAT_ID: return
     action, product_id_str = call.data.split('_')
     product_id = int(product_id_str)
@@ -803,7 +803,6 @@ def publish_product_to_channel(product_id):
                 f"👤 *Продавець:* [Написати](tg://user?id={product['seller_chat_id']})"
             )
             
-            # Видаляємо старе повідомлення, якщо є (для оновлення)
             if product['channel_message_id']:
                 try: bot.delete_message(CHANNEL_ID, product['channel_message_id'])
                 except: pass
@@ -816,13 +815,10 @@ def publish_product_to_channel(product_id):
             else:
                 published_message = bot.send_message(CHANNEL_ID, channel_text, parse_mode='Markdown')
             
-            # Створюємо повідомлення з кнопкою лайка, відповідаючи на основне повідомлення
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton(f"❤️ {product['likes_count']}", callback_data=f"toggle_favorite_{product_id}_{published_message.message_id}")) # Додаємо ID основного повідомлення
+            markup.add(types.InlineKeyboardButton(f"❤️ {product['likes_count']}", callback_data=f"toggle_favorite_{product_id}_{published_message.message_id}"))
             like_message = bot.send_message(CHANNEL_ID, "👇 Оцініть товар", reply_to_message_id=published_message.message_id, reply_markup=markup)
 
-            # Оновлюємо дані в БД
-            # Важливо: channel_message_id тепер зберігає ID повідомлення з кнопкою лайка
             cur.execute("""
                 UPDATE products SET status = 'approved', moderator_id = %s, moderated_at = CURRENT_TIMESTAMP, channel_message_id = %s
                 WHERE id = %s;
@@ -860,7 +856,6 @@ def handle_seller_sold_product(call):
                 bot.answer_callback_query(call.id, "Цей товар вже продано або не опубліковано.")
                 return
             
-            # Розрахунок комісії
             commission_amount = 0.0
             try:
                 cleaned_price = re.sub(r'[^\d.]', '', product['price'])
@@ -868,19 +863,15 @@ def handle_seller_sold_product(call):
                     commission_amount = float(cleaned_price) * product['commission_rate']
             except: pass
 
-            # Оновлення статусу в БД
             cur.execute("UPDATE products SET status = 'sold', commission_amount = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (commission_amount, product_id))
             
-            # Створення транзакції
             if commission_amount > 0:
                 cur.execute("INSERT INTO commission_transactions (product_id, seller_chat_id, amount) VALUES (%s, %s, %s)", (product_id, seller_chat_id, commission_amount))
             
             conn.commit()
             
-            # Оновлення повідомлення в каналі
             if product['channel_message_id']:
                 try:
-                    # Редагуємо повідомлення з кнопкою, прибираючи її
                     bot.edit_message_text(f"Товар '{product['product_name']}' продано!", CHANNEL_ID, product['channel_message_id'], reply_markup=None)
                 except Exception as e:
                     logger.warning(f"Не вдалося оновити повідомлення {product['channel_message_id']} в каналі: {e}")
@@ -912,12 +903,10 @@ def handle_delete_my_product(call):
                 bot.answer_callback_query(call.id, "Товар не знайдено.")
                 return
 
-            # Видалення повідомлення з каналу
             if product['channel_message_id']:
                 try: bot.delete_message(CHANNEL_ID, product['channel_message_id'])
                 except: pass
             
-            # Видалення товару з БД
             cur.execute("DELETE FROM products WHERE id = %s", (product_id,))
             conn.commit()
             
@@ -950,11 +939,9 @@ def handle_republish_product(call):
                 bot.answer_callback_query(call.id, "Досягнуто ліміт переопублікацій на сьогодні.")
                 return
             
-            # Оновлюємо лічильник
             cur.execute("UPDATE products SET republish_count = %s, last_republish_date = %s WHERE id = %s", (new_count, today, product_id))
             conn.commit()
             
-            # Переопублікація
             publish_product_to_channel(product_id)
             bot.answer_callback_query(call.id, "Товар переопубліковано!")
             log_statistics('product_republished', seller_chat_id, product_id)
@@ -986,7 +973,8 @@ def process_new_price(message):
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT seller_chat_id FROM products WHERE id = %s", (product_id,))
-            if not cur.fetchone() or cur.fetchone()['seller_chat_id'] != chat_id: return
+            product = cur.fetchone()
+            if not product or product['seller_chat_id'] != chat_id: return
 
             cur.execute("UPDATE products SET price = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (new_price, product_id))
             conn.commit()
@@ -995,10 +983,10 @@ def process_new_price(message):
         publish_product_to_channel(product_id)
     finally:
         if conn: conn.close()
-        del user_data[chat_id]
+        if chat_id in user_data:
+            del user_data[chat_id]
 
 # --- 17. Логіка для модератора ---
-# ... (код без значних змін)
 @error_handler
 def handle_moderator_actions(call):
     if call.message.chat.id != ADMIN_CHAT_ID: return
@@ -1059,7 +1047,6 @@ def handle_toggle_favorite(call):
 
 @error_handler
 def handle_shipping_choice(call):
-    # ... (код без змін)
     chat_id = call.message.chat.id
     if chat_id not in user_data or user_data[chat_id].get('step') != 'waiting_shipping': return
     if call.data == 'shipping_next':
@@ -1159,7 +1146,6 @@ def handle_run_raffle(call):
         
         bot.answer_callback_query(call.id)
         bot.send_message(call.message.chat.id, text, parse_mode='Markdown')
-        # Опціонально: надіслати повідомлення в канал
         bot.send_message(CHANNEL_ID, text, parse_mode='Markdown')
 
     finally:
