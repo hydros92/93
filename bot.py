@@ -8,6 +8,7 @@ import json
 import requests
 from dotenv import load_dotenv
 import random # Додано для переможців розіграшу
+import time # Додано імпорт модуля time
 
 # Імпорти для Webhook (Flask)
 from flask import Flask, request
