@@ -21,21 +21,23 @@ WEBHOOK_BASE_URL = os.environ.get("WEBHOOK_BASE_URL")  # напр. https://your-
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
+with app.app_context():
+    bot.remove_webhook()
+    bot.set_webhook(url=f"{WEBHOOK_BASE_URL}/{BOT_TOKEN}")
+
+
+
+
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def telegram_webhook():
+def webhook():
     if request.headers.get("content-type") == "application/json":
         json_string = request.get_data().decode("utf-8")
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
-        return "Webhook received!", 200
-    return "Invalid request", 403
+        return "OK", 200
+    return "Invalid content type", 403
 
 
-@app.before_first_request
-def setup_webhook():
-    bot.remove_webhook()
-    full_webhook_url = f"{WEBHOOK_BASE_URL}/{BOT_TOKEN}"
-    bot.set_webhook(url=full_webhook_url)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
@@ -724,20 +726,31 @@ def go_to_next_step(chat_id):
         user_data[chat_id]['step_number'] = next_step_number
         send_product_step_message(chat_id)
 
+@bot.message_handler(content_types=['photo'])
+
 @error_handler
 def process_product_photo(message):
     """Обробляє завантаження фотографій товару під час відповідного кроку."""
     chat_id = message.chat.id
-    if chat_id in user_data and user_data[chat_id].get('step') == 'waiting_photos':
-        if len(user_data[chat_id]['data']['photos']) < 5:
-            file_id = message.photo[-1].file_id
-            user_data[chat_id]['data']['photos'].append(file_id)
-            photos_count = len(user_data[chat_id]['data']['photos'])
-            bot.send_message(chat_id, f"✅ Фото {photos_count}/5 додано. Надішліть ще або натисніть 'Далі'")
-        else:
-            bot.send_message(chat_id, "Максимум 5 фото. Натисніть 'Далі' для продовження.")
-    else:
+
+    # Перевіряємо, чи є user_data для чату
+    user = user_data.get(chat_id)
+    if not user or user.get('step') != 'waiting_photos':
         bot.send_message(chat_id, "Будь ласка, надсилайте фотографії тільки на відповідному кроці.")
+        return
+
+    # Ініціалізуємо список фото, якщо він відсутній
+    if 'photos' not in user['data']:
+        user['data']['photos'] = []
+
+    # Обмеження: не більше 5 фото
+    if len(user['data']['photos']) < 5:
+        file_id = message.photo[-1].file_id
+        user['data']['photos'].append(file_id)
+        count = len(user['data']['photos'])
+        bot.send_message(chat_id, f"✅ Фото {count}/5 додано. Надішліть ще або натисніть 'Далі'")
+    else:
+        bot.send_message(chat_id, "Максимум 5 фото. Натисніть 'Далі' для продовження.")
 
 @error_handler
 def process_product_location(message):
