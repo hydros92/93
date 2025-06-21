@@ -1,7 +1,4 @@
-pyTelegramBotAPI==4.14.0 # Або остання стабільна версія, яка точно працювала. Можна спробувати 4.10.0, якщо 4.14.0 не допоможе.
-requests
 python-dotenv
+pyTelegramBotAPI
 psycopg2-binary
-APScheduler
-Flask
 gunicorn
