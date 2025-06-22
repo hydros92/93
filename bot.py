@@ -1056,13 +1056,7 @@ def send_channel_link(message):
         if not CHANNEL_ID:
             raise ValueError("CHANNEL_ID не встановлено у .env. Неможливо сформувати посилання на канал.")
 
-        try:
-    chat_info = bot.get_chat(CHANNEL_ID)
-except Exception as e:
-    logger.error(f"Не вдалося отримати інформацію про канал: {e}")
-    bot.send_message(chat_id, "❌ Неможливо отримати посилання на канал. Перевірте, чи бот доданий у канал як адміністратор.")
-    return
-
+        chat_info = bot.get_chat(CHANNEL_ID)
         channel_link = ""
         if chat_info.invite_link: 
             channel_link = chat_info.invite_link
@@ -2116,13 +2110,7 @@ def handle_republish_product(call):
 @error_handler
 def handle_delete_my_product(call):
     seller_chat_id = call.message.chat.id
-    parts = call.data.split('_')
-if len(parts) < 4:
-    logger.error(f"Неправильний формат call.data у handle_delete_my_product: {call.data}")
-    bot.answer_callback_query(call.id, "⚠️ Неможливо обробити запит. Спробуйте ще раз.")
-    return
-product_id = int(parts[3])
- 
+    product_id = int(call.data.split('_')[3]) 
 
     conn = get_db_connection()
     if not conn:
