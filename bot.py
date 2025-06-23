@@ -17,7 +17,6 @@ from psycopg2 import extras
 
 load_dotenv()
 
-# --- 1. Конфігурація Бота та змінні оточення ---
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID', '0'))
 CHANNEL_ID = int(os.getenv('CHANNEL_ID', '0'))
@@ -27,7 +26,6 @@ GEMINI_API_URL = os.getenv('GEMINI_API_URL', "https://generativelanguage.googlea
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 DATABASE_URL = os.getenv('DATABASE_URL')
 
-# --- Налаштування логування ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -35,7 +33,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Перевірка змінних оточення ---
 def validate_env_vars():
     missing_vars = []
     if not TOKEN:
@@ -55,11 +52,9 @@ def validate_env_vars():
 
 validate_env_vars()
 
-# --- Ініціалізація Flask та TeleBot ---
 app = Flask(__name__)
 bot = telebot.TeleBot(TOKEN)
 
-# --- Налаштування повторних спроб для HTTP-запитів ---
 try:
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
@@ -77,8 +72,11 @@ try:
 except ImportError:
     logger.warning("Не вдалося імпортувати 'requests' або 'urllib3'. Механізм повторних спроб не активовано.")
 
-# --- Декоратор для обробки помилок ---
 def error_handler(func):
+    """
+    Декоратор для обробки помилок у функціях Telegram бота.
+    Відправляє повідомлення про помилку адміністратору та користувачу.
+    """
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
@@ -101,8 +99,8 @@ def error_handler(func):
                 logger.error(f"Не вдалося надіслати повідомлення про помилку: {e_notify}")
     return wrapper
 
-# --- Функції для роботи з базою даних ---
 def get_db_connection():
+    """Встановлює з'єднання з базою даних PostgreSQL."""
     try:
         conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
         return conn
@@ -112,6 +110,7 @@ def get_db_connection():
 
 @error_handler
 def init_db():
+    """Ініціалізує таблиці бази даних, якщо вони не існують."""
     conn = get_db_connection()
     if not conn:
         logger.critical("Не вдалося підключитися до БД для ініціалізації.")
@@ -153,7 +152,6 @@ def init_db():
                     admin_message_id BIGINT, 
                     channel_message_id BIGINT, 
                     views INTEGER DEFAULT 0,
-                    likes_count INTEGER DEFAULT 0, 
                     republish_count INTEGER DEFAULT 0,
                     last_republish_date DATE,
                     shipping_options TEXT, 
@@ -203,13 +201,14 @@ def init_db():
                 );
             """))
             
+            # Міграції для додавання нових стовпців, якщо вони не існують
             migrations = {
                 'products': [
                     "ALTER TABLE products ADD COLUMN IF NOT EXISTS republish_count INTEGER DEFAULT 0;",
                     "ALTER TABLE products ADD COLUMN IF NOT EXISTS last_republish_date DATE;",
                     "ALTER TABLE products ADD COLUMN IF NOT EXISTS shipping_options TEXT;",
                     "ALTER TABLE products ADD COLUMN IF NOT EXISTS hashtags TEXT;",
-                    "ALTER TABLE products ADD COLUMN IF NOT EXISTS likes_count INTEGER DEFAULT 0;"
+                    # Removed 'likes_count' as per request
                 ],
                 'users': [
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_id BIGINT;"
@@ -236,9 +235,13 @@ def init_db():
 
 user_data = {} # Словник для зберігання тимчасових даних користувачів
 
-# --- Функції для управління користувачами ---
 @error_handler
 def save_user(message_or_user, referrer_id=None):
+    """
+    Зберігає інформацію про користувача в базу даних або оновлює її.
+    :param message_or_user: Об'єкт Message або User від Telebot.
+    :param referrer_id: ID користувача, який запросив даного користувача.
+    """
     user = None
     chat_id = None
 
@@ -286,6 +289,11 @@ def save_user(message_or_user, referrer_id=None):
 
 @error_handler
 def is_user_blocked(chat_id):
+    """
+    Перевіряє, чи заблокований користувач.
+    :param chat_id: ID чату користувача.
+    :return: True, якщо користувач заблокований, False в іншому випадку.
+    """
     conn = get_db_connection()
     if not conn: return True 
     try:
@@ -302,6 +310,13 @@ def is_user_blocked(chat_id):
 
 @error_handler
 def set_user_block_status(admin_id, chat_id, status):
+    """
+    Встановлює статус блокування користувача.
+    :param admin_id: ID адміністратора, який виконує дію.
+    :param chat_id: ID чату користувача, чий статус змінюється.
+    :param status: True для блокування, False для розблокування.
+    :return: True, якщо операція успішна, False в іншому випадку.
+    """
     conn = get_db_connection()
     if not conn: return False
     try:
@@ -326,9 +341,14 @@ def set_user_block_status(admin_id, chat_id, status):
         if conn:
             conn.close()
 
-# --- Функції для роботи з товарами та хештегами ---
 @error_handler
 def generate_hashtags(description, num_hashtags=5):
+    """
+    Генерує хештеги з опису товару.
+    :param description: Опис товару.
+    :param num_hashtags: Максимальна кількість хештегів.
+    :return: Рядок з хештегами, розділеними пробілами.
+    """
     words = re.findall(r'\b\w+\b', description.lower())
     stopwords = set([
         'я', 'ми', 'ти', 'ви', 'він', 'вона', 'воно', 'вони', 'це', 'що',
@@ -344,9 +364,15 @@ def generate_hashtags(description, num_hashtags=5):
     hashtags = ['#' + word for word in unique_words[:num_hashtags]] 
     return " ".join(hashtags) if hashtags else ""
 
-# --- Функції логування статистики ---
 @error_handler
 def log_statistics(action, user_id=None, product_id=None, details=None):
+    """
+    Логує статистику дій користувачів та бота.
+    :param action: Назва дії (наприклад, 'product_added', 'user_blocked').
+    :param user_id: ID користувача, який виконав дію.
+    :param product_id: ID товару, якщо дія стосується товару.
+    :param details: Додаткові деталі дії.
+    """
     conn = get_db_connection()
     if not conn: return
     try:
@@ -363,9 +389,14 @@ def log_statistics(action, user_id=None, product_id=None, details=None):
         if conn:
             conn.close()
 
-# --- Функції AI Помічника (Gemini) ---
 @error_handler
 def get_gemini_response(prompt, conversation_history=None):
+    """
+    Отримує відповідь від Gemini API.
+    :param prompt: Запит до AI.
+    :param conversation_history: Історія розмови для контексту.
+    :return: Відповідь від AI.
+    """
     if not GEMINI_API_KEY:
         logger.warning("Gemini API ключ не налаштований. Використовується заглушка.")
         return generate_elon_style_response(prompt)
@@ -417,6 +448,11 @@ def get_gemini_response(prompt, conversation_history=None):
         return generate_elon_style_response(prompt) 
 
 def generate_elon_style_response(prompt):
+    """
+    Генерує заглушку відповіді в стилі Ілона Маска, якщо Gemini API недоступний.
+    :param prompt: Оригінальний запит користувача.
+    :return: Сгенерована відповідь.
+    """
     responses = [
         "🚀 Гм, цікаве питання! Як і з SpaceX, тут потрібен системний підхід. Що саме вас цікавить?",
         "⚡ Очевидно! Як кажуть в Tesla - простота це вершина складності. Давайте розберемося.",
@@ -443,9 +479,15 @@ def generate_elon_style_response(prompt):
     
     return base_response
 
-# --- Функції для ведення історії розмов з AI ---
 @error_handler
 def save_conversation(chat_id, message_text, sender_type, product_id=None):
+    """
+    Зберігає повідомлення розмови в базу даних.
+    :param chat_id: ID чату користувача.
+    :param message_text: Текст повідомлення.
+    :param sender_type: Тип відправника ('user' або 'ai').
+    :param product_id: ID товару, якщо повідомлення стосується його.
+    """
     conn = get_db_connection()
     if not conn: return
     try:
@@ -464,6 +506,12 @@ def save_conversation(chat_id, message_text, sender_type, product_id=None):
 
 @error_handler
 def get_conversation_history(chat_id, limit=5):
+    """
+    Отримує історію розмов для даного користувача.
+    :param chat_id: ID чату користувача.
+    :param limit: Максимальна кількість повідомлень для отримання.
+    :return: Список словників з історією розмови.
+    """
     conn = get_db_connection()
     if not conn: return []
     try:
@@ -486,17 +534,17 @@ def get_conversation_history(chat_id, limit=5):
         if conn:
             conn.close()
 
-# --- Головне меню бота ---
+# Головне меню бота
 main_menu_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
 main_menu_markup.add(types.KeyboardButton("📦 Додати товар"), types.KeyboardButton("📋 Мої товари"))
-# main_menu_markup.add(types.KeyboardButton("⭐ Обрані")) # Видалено з головного меню
-main_menu_markup.add(types.KeyboardButton("❓ Допомога"), types.KeyboardButton("📺 Наш канал")) 
-main_menu_markup.add(types.KeyboardButton("🤖 AI Помічник"))
+main_menu_markup.add(types.KeyboardButton("📜 Правила"), types.KeyboardButton("❓ Допомога")) 
+main_menu_markup.add(types.KeyboardButton("📺 Наш канал"), types.KeyboardButton("🤖 AI Помічник"))
 
+# Кнопки для навігації в процесі додавання товару
 back_button = types.KeyboardButton("🔙 Назад")
 cancel_button = types.KeyboardButton("❌ Скасувати") 
 
-# --- Кроки додавання товару ---
+# Етапи додавання товару
 ADD_PRODUCT_STEPS = {
     1: {'name': 'waiting_name', 'prompt': "📝 *Крок 1/6: Назва товару*\n\nВведіть назву товару:", 'next_step': 2, 'prev_step': None},
     2: {'name': 'waiting_price', 'prompt': "💰 *Крок 2/6: Ціна*\n\nВведіть ціну (наприклад, `500 грн`, `100 USD` або `Договірна`):", 'next_step': 3, 'prev_step': 1},
@@ -506,9 +554,12 @@ ADD_PRODUCT_STEPS = {
     6: {'name': 'waiting_description', 'prompt': "✍️ *Крок 6/6: Опис*\n\nНапишіть детальний опис товару:", 'next_step': 'confirm', 'prev_step': 5}
 }
 
-# --- Функції для процесу додавання товару ---
 @error_handler
 def start_add_product_flow(message):
+    """
+    Ініціює процес додавання нового товару.
+    :param message: Об'єкт Message.
+    """
     chat_id = message.chat.id
     user_data[chat_id] = {
         'flow': 'add_product', 
@@ -528,6 +579,10 @@ def start_add_product_flow(message):
 
 @error_handler
 def send_product_step_message(chat_id):
+    """
+    Відправляє користувачу повідомлення для поточного кроку додавання товару.
+    :param chat_id: ID чату користувача.
+    """
     if chat_id not in user_data or user_data[chat_id].get('flow') != 'add_product':
         return 
 
@@ -568,6 +623,10 @@ def send_product_step_message(chat_id):
 
 @error_handler
 def process_product_step(message):
+    """
+    Обробляє повідомлення користувача під час процесу додавання товару.
+    :param message: Об'єкт Message.
+    """
     chat_id = message.chat.id
     if chat_id not in user_data or user_data[chat_id].get('flow') != 'add_product':
         bot.send_message(chat_id, "Ви не в процесі додавання товару. Скористайтеся меню.", reply_markup=main_menu_markup)
@@ -630,6 +689,10 @@ def process_product_step(message):
 
 @error_handler
 def go_to_next_step(chat_id):
+    """
+    Переводить користувача до наступного кроку в процесі додавання товару.
+    :param chat_id: ID чату користувача.
+    """
     current_step_number = user_data[chat_id]['step_number']
     next_step_number = ADD_PRODUCT_STEPS[current_step_number]['next_step']
     
@@ -641,6 +704,10 @@ def go_to_next_step(chat_id):
 
 @error_handler
 def process_product_photo(message):
+    """
+    Обробляє завантажені фотографії під час додавання товару.
+    :param message: Об'єкт Message з фото.
+    """
     chat_id = message.chat.id
     if chat_id in user_data and user_data[chat_id].get('step') == 'waiting_photos':
         if len(user_data[chat_id]['data']['photos']) < 5:
@@ -655,6 +722,10 @@ def process_product_photo(message):
 
 @error_handler
 def process_product_location(message):
+    """
+    Обробляє відправлену геолокацію під час додавання товару.
+    :param message: Об'єкт Message з геолокацією.
+    """
     chat_id = message.chat.id
     if chat_id in user_data and user_data[chat_id].get('step') == 'waiting_location':
         if message.location: 
@@ -671,6 +742,10 @@ def process_product_location(message):
 
 @error_handler
 def confirm_and_send_for_moderation(chat_id):
+    """
+    Зберігає дані товару в БД та відправляє на модерацію адміністратору.
+    :param chat_id: ID чату продавця.
+    """
     data = user_data[chat_id]['data']
     
     conn = get_db_connection()
@@ -724,6 +799,10 @@ def confirm_and_send_for_moderation(chat_id):
 
 @error_handler
 def send_product_for_admin_review(product_id):
+    """
+    Відправляє інформацію про новий товар адміністратору для модерації.
+    :param product_id: ID товару.
+    """
     conn = get_db_connection()
     if not conn: return
 
@@ -804,10 +883,13 @@ def send_product_for_admin_review(product_id):
         if conn:
             conn.close()
 
-# --- Головний обробник повідомлень ---
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'location'])
 @error_handler
 def handle_messages(message):
+    """
+    Головний обробник всіх вхідних повідомлень.
+    :param message: Об'єкт Message.
+    """
     chat_id = message.chat.id
     user_text = message.text if message.content_type == 'text' else ""
 
@@ -848,8 +930,8 @@ def handle_messages(message):
         start_add_product_flow(message)
     elif user_text == "📋 Мої товари":
         send_my_products(message)
-    # elif user_text == "⭐ Обрані": # Видалено з головного меню
-    #    send_favorites(message) # Виклик перенесено всередину send_my_products
+    elif user_text == "📜 Правила": # New 'Rules' button
+        send_rules_message(message)
     elif user_text == "❓ Допомога":
         send_help_message(message)
     elif user_text == "📺 Наш канал":
@@ -858,6 +940,7 @@ def handle_messages(message):
         bot.send_message(chat_id, "Привіт! Я ваш AI помічник. Задайте мені будь-яке питання про товари, продажі, або просто поспілкуйтесь!\n\n(Напишіть '❌ Скасувати' для виходу з режиму AI чату.)", reply_markup=types.ReplyKeyboardRemove())
         bot.register_next_step_handler(message, handle_ai_chat)
     elif message.content_type == 'text': 
+        # If user is not in any flow and types text, treat it as AI chat
         handle_ai_chat(message)
     elif message.content_type == 'photo':
         bot.send_message(chat_id, "Я отримав ваше фото, але не знаю, що з ним робити поза процесом додавання товару. 🤔")
@@ -868,6 +951,10 @@ def handle_messages(message):
 
 @error_handler
 def handle_ai_chat(message):
+    """
+    Обробляє взаємодію з AI помічником.
+    :param message: Об'єкт Message.
+    """
     chat_id = message.chat.id
     user_text = message.text
 
@@ -894,6 +981,10 @@ def handle_ai_chat(message):
 
 @error_handler
 def send_my_products(message):
+    """
+    Відправляє користувачу список його товарів, включаючи обрані.
+    :param message: Об'єкт Message.
+    """
     chat_id = message.chat.id
     conn = get_db_connection()
     if not conn:
@@ -902,16 +993,15 @@ def send_my_products(message):
     cur = conn.cursor()
     try:
         cur.execute(pg_sql.SQL("""
-            SELECT id, product_name, status, price, created_at, channel_message_id, views, republish_count, last_republish_date, likes_count
+            SELECT id, product_name, status, price, created_at, channel_message_id, views, republish_count, last_republish_date
             FROM products
             WHERE seller_chat_id = %s
             ORDER BY created_at DESC
         """), (chat_id,))
         user_products = cur.fetchall()
 
-        # Отримання обраних товарів для цього користувача
         cur.execute(pg_sql.SQL("""
-            SELECT p.id, p.product_name, p.price, p.status, p.channel_message_id, p.likes_count
+            SELECT p.id, p.product_name, p.price, p.channel_message_id
             FROM products p
             JOIN favorites f ON p.id = f.product_id
             WHERE f.user_chat_id = %s AND p.status = 'approved' 
@@ -927,9 +1017,8 @@ def send_my_products(message):
         if conn:
             conn.close()
 
-    # Виводимо власні товари
     if user_products:
-        response_intro = "📋 *Ваші оголошення:*\n\n"
+        response_intro = "📋 *Ваші товари:*\n\n"
         bot.send_message(chat_id, response_intro, parse_mode='Markdown')
 
         for i, product in enumerate(user_products, 1):
@@ -960,7 +1049,6 @@ def send_my_products(message):
 
             if product['status'] == 'approved':
                 product_text += f"   👁️ Перегляди: {product['views']}\n"
-                product_text += f"   ❤️ Лайки: {product['likes_count']}\n" 
                 
                 channel_link_part = str(CHANNEL_ID).replace("-100", "") 
                 channel_url = f"https://t.me/c/{channel_link_part}/{product['channel_message_id']}" if product['channel_message_id'] else None
@@ -996,8 +1084,8 @@ def send_my_products(message):
 
     else:
         bot.send_message(chat_id, "📭 Ви ще не додавали жодних товарів.\n\nНатисніть '📦 Додати товар' щоб створити своє перше оголошення!")
-
-    # Виводимо обрані товари
+    
+    # Send favorite products separately at the end
     if favorite_products:
         bot.send_message(chat_id, "\n⭐ *Ваші обрані товари:*\n", parse_mode='Markdown')
         for fav in favorite_products:
@@ -1007,33 +1095,51 @@ def send_my_products(message):
             text = (
                 f"*{fav['product_name']}*\n"
                 f"   💰 {fav['price']}\n"
-                f"   ❤️ Лайки: {fav['likes_count']}\n"
             )
-            markup = types.InlineKeyboardMarkup()
+            fav_markup = types.InlineKeyboardMarkup()
             if url:
-                markup.add(types.InlineKeyboardButton("👀 Переглянути в каналі", url=url))
+                fav_markup.add(types.InlineKeyboardButton("👀 Переглянути в каналі", url=url))
             
-            # Кнопка для видалення з обраних
-            markup.add(types.InlineKeyboardButton("💔 Видалити з обраного", callback_data=f"toggle_favorite_{fav['id']}_{fav['channel_message_id']}"))
-
-            bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup, disable_web_page_preview=True)
+            fav_markup.add(types.InlineKeyboardButton("💔 Видалити з обраного", callback_data=f"toggle_favorite_{fav['id']}")) # Removed channel_message_id from callback_data
+            bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=fav_markup, disable_web_page_preview=True)
     else:
         bot.send_message(chat_id, "📜 Ваш список обраних порожній. Ви можете додати товар, натиснувши ❤️ під ним у каналі.")
 
-# Прибрано функцію send_favorites, її функціонал перенесено до send_my_products
+
+@error_handler
+def send_rules_message(message):
+    """
+    Відправляє користувачу повідомлення з правилами бота.
+    :param message: Об'єкт Message.
+    """
+    rules_text = (
+        "📜 *Правила користування сервісом*\n\n"
+        "Вітаємо у нашому боті для продажу товарів! Будь ласка, ознайомтеся з основними правилами:\n\n"
+        "1.  **Продавець оплачує комісію платформи.** За кожен успішно проданий товар стягується комісія в розмірі 10% від кінцевої ціни продажу.\n"
+        "2.  **Покупець оплачує доставку.** Всі витрати, пов'язані з доставкою товару, несе покупець.\n"
+        "3.  **Якість оголошень.** Надавайте якісні фотографії та детальний опис товарів, щоб прискорити модерацію та продаж.\n"
+        "4.  **Комунікація.** Усі питання та домовленості щодо товару ведіть безпосередньо з продавцем/покупцем.\n"
+        "5.  **Блокування.** За порушення правил або шахрайські дії ваш акаунт може бути заблокований без попередження.\n\n"
+        "Дякуємо за співпрацю!"
+    )
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💰 Детальніше про комісію", callback_data="show_commission_info"))
+    bot.send_message(message.chat.id, rules_text, parse_mode='Markdown', reply_markup=markup)
 
 @error_handler
 def send_help_message(message):
+    """
+    Відправляє користувачу довідкове повідомлення.
+    :param message: Об'єкт Message.
+    """
     help_text = (
         "🆘 *Довідка*\n\n"
         "🤖 Я ваш AI-помічник для купівлі та продажу. Ви можете:\n"
         "📦 *Додати товар* - створити оголошення.\n"
-        "📋 *Мої товари* - переглянути ваші активні, продані та обрані товари.\n" # Оновлено текст
+        "📋 *Мої товари* - переглянути ваші активні, продані та обрані товари.\n"
+        "📜 *Правила* - ознайомитись з правилами використання бота.\n" 
         "📺 *Наш канал* - переглянути всі актуальні пропозиції та взяти участь у розіграшах.\n" 
         "🤖 *AI Помічник* - поспілкуватися з AI.\n\n"
-        "✍️ *Правила сервісу*:\n"
-        "– Доставку оплачує *покупець*.\n"
-        "– Комісію сервісу сплачує *продавець*.\n\n"
         "🗣️ *Спілкування:* Просто пишіть мені ваші запитання або пропозиції, і мій вбудований AI спробує вам допомогти!\n\n"
         f"Якщо виникли технічні проблеми, зверніться до адміністратора."
     )
@@ -1043,6 +1149,10 @@ def send_help_message(message):
 
 @error_handler
 def send_commission_info(call):
+    """
+    Відправляє користувачу інформацію про комісію.
+    :param call: Об'єкт CallbackQuery.
+    """
     commission_rate_percent = 10 
     text = (
         f"💰 *Інформація про комісію*\n\n"
@@ -1057,6 +1167,10 @@ def send_commission_info(call):
 
 @error_handler
 def send_channel_link(message):
+    """
+    Відправляє користувачу посилання на канал та реферальне посилання.
+    :param message: Об'єкт Message.
+    """
     chat_id = message.chat.id
     try:
         if not CHANNEL_ID:
@@ -1108,6 +1222,10 @@ def send_channel_link(message):
 @bot.callback_query_handler(func=lambda call: True)
 @error_handler
 def callback_inline(call):
+    """
+    Обробник всіх inline callback запитів.
+    :param call: Об'єкт CallbackQuery.
+    """
     action, *params = call.data.split('_') 
 
     if action == 'admin':
@@ -1142,12 +1260,18 @@ def callback_inline(call):
         handle_show_winners(call)
     elif action == 'runraffle': 
         handle_run_raffle(call)
+    elif action == 'user' and (call.data.startswith('user_block_') or call.data.startswith('user_unblock_')):
+        handle_user_block_callbacks(call)
     
     else:
         bot.answer_callback_query(call.id, "Невідома дія.") 
 
 @error_handler
 def handle_admin_callbacks(call):
+    """
+    Обробляє callback запити з адмін-панелі.
+    :param call: Об'єкт CallbackQuery.
+    """
     if call.message.chat.id != ADMIN_CHAT_ID:
         bot.answer_callback_query(call.id, "❌ Доступ заборонено.")
         return
@@ -1176,6 +1300,10 @@ def handle_admin_callbacks(call):
 
 @error_handler
 def send_admin_statistics(call):
+    """
+    Відправляє адміністратору статистику бота.
+    :param call: Об'єкт CallbackQuery.
+    """
     conn = get_db_connection()
     if not conn:
         bot.edit_message_text("❌ Помилка при отриманні статистики (помилка БД).", call.message.chat.id, call.message.message_id)
@@ -1195,8 +1323,9 @@ def send_admin_statistics(call):
         cur.execute(pg_sql.SQL("SELECT COUNT(*) FROM products WHERE DATE(created_at) = %s;"), (today_utc,))
         today_products = cur.fetchone()[0]
         
-        cur.execute(pg_sql.SQL("SELECT SUM(likes_count) FROM products;"))
-        total_likes = cur.fetchone()[0] or 0
+        # Removed likes_count from statistics as per request
+        # cur.execute(pg_sql.SQL("SELECT SUM(likes_count) FROM products;"))
+        # total_likes = cur.fetchone()[0] or 0
 
     except Exception as e:
         logger.error(f"Помилка при отриманні адміністративної статистики: {e}", exc_info=True)
@@ -1219,7 +1348,8 @@ def send_admin_statistics(call):
         f"• Термін дії закінчився: {product_stats.get('expired', 0)}\n\n"
         f"📅 *Сьогодні додано:* {today_products}\n"
         f"📈 *Всього товарів:* {sum(product_stats.values())}\n"
-        f"❤️ *Всього лайків:* {total_likes}" 
+        # Removed total likes as per request
+        # f"❤️ *Всього лайків:* {total_likes}" 
     )
 
     markup = types.InlineKeyboardMarkup()
@@ -1230,6 +1360,10 @@ def send_admin_statistics(call):
 
 @error_handler
 def send_users_list(call):
+    """
+    Відправляє адміністратору список останніх користувачів.
+    :param call: Об'єкт CallbackQuery.
+    """
     conn = get_db_connection()
     if not conn:
         bot.edit_message_text("❌ Помилка при отриманні списку користувачів (помилка БД).", call.message.chat.id, call.message.message_id)
@@ -1264,6 +1398,10 @@ def send_users_list(call):
 
 @error_handler
 def process_user_for_block_unblock(message):
+    """
+    Обробляє введення адміністратора для блокування/розблокування користувача.
+    :param message: Об'єкт Message.
+    """
     admin_chat_id = message.chat.id
     target_identifier = message.text.strip()
     target_chat_id = None
@@ -1323,6 +1461,10 @@ def process_user_for_block_unblock(message):
 
 @error_handler
 def handle_user_block_callbacks(call):
+    """
+    Обробляє callback запити для блокування/розблокування користувачів.
+    :param call: Об'єкт CallbackQuery.
+    """
     admin_chat_id = call.message.chat.id
     data_parts = call.data.split('_')
     action = data_parts[1] 
@@ -1358,6 +1500,10 @@ def handle_user_block_callbacks(call):
 
 @error_handler
 def send_pending_products_for_moderation(call):
+    """
+    Відправляє адміністратору список товарів на модерації.
+    :param call: Об'єкт CallbackQuery.
+    """
     conn = get_db_connection()
     if not conn:
         bot.edit_message_text("❌ Помилка при отриманні товарів на модерацію (помилка БД).", call.message.chat.id, call.message.message_id)
@@ -1442,6 +1588,10 @@ def send_pending_products_for_moderation(call):
 
 @error_handler
 def send_admin_commissions_info(call):
+    """
+    Відправляє адміністратору інформацію про комісії.
+    :param call: Об'єкт CallbackQuery.
+    """
     conn = get_db_connection()
     if not conn:
         bot.edit_message_text("❌ Помилка при отриманні інформації про комісії (помилка БД).", call.message.chat.id, call.message.message_id)
@@ -1500,6 +1650,10 @@ def send_admin_commissions_info(call):
 
 @error_handler
 def send_admin_ai_statistics(call):
+    """
+    Відправляє адміністратору статистику використання AI.
+    :param call: Об'єкт CallbackQuery.
+    """
     conn = get_db_connection()
     if not conn:
         bot.edit_message_text("❌ Помилка при отриманні AI статистики (помилка БД).", call.message.chat.id, call.message.message_id)
@@ -1570,6 +1724,10 @@ def send_admin_ai_statistics(call):
 
 @error_handler
 def send_admin_referral_stats(call):
+    """
+    Відправляє адміністратору статистику рефералів.
+    :param call: Об'єкт CallbackQuery.
+    """
     conn = get_db_connection()
     if not conn:
         bot.edit_message_text("❌ Помилка при отриманні реферальної статистики (помилка БД).", call.message.chat.id, call.message.message_id)
@@ -1624,6 +1782,10 @@ def send_admin_referral_stats(call):
 
 @error_handler
 def handle_product_moderation_callbacks(call):
+    """
+    Обробляє callback запити для модерації товарів (схвалити/відхилити).
+    :param call: Об'єкт CallbackQuery.
+    """
     if call.message.chat.id != ADMIN_CHAT_ID:
         bot.answer_callback_query(call.id, "❌ Доступ заборонено.")
         return
@@ -1649,7 +1811,7 @@ def handle_product_moderation_callbacks(call):
         bot.answer_callback_query(call.id, "❌ Помилка при отриманні інформації про товар.")
         if conn: conn.close()
         return
-
+    
     if not product_info:
         bot.answer_callback_query(call.id, "Товар не знайдено.")
         if conn: conn.close()
@@ -1707,18 +1869,11 @@ def handle_product_moderation_callbacks(call):
                 published_message = bot.send_message(CHANNEL_ID, channel_text, parse_mode='Markdown')
 
             if published_message:
-                # like_markup = types.InlineKeyboardMarkup() # Видалено кнопку "Оцініть товар"
-                # like_markup.add(types.InlineKeyboardButton("❤️ 0", callback_data=f"toggle_favorite_{product_id}_{published_message.message_id}")) 
-                
-                # like_message = bot.send_message(CHANNEL_ID, "👇 Оцініть товар!", # Видалено повідомлення "Оцініть товар"
-                #                                  reply_to_message_id=published_message.message_id, 
-                #                                  reply_markup=like_markup,
-                #                                  parse_mode='Markdown')
-
-                new_channel_message_id = published_message.message_id # Змінено на ID основного повідомлення
+                # Removed the like button and "Оцініть товар!" message
+                new_channel_message_id = published_message.message_id 
                 cur.execute(pg_sql.SQL("""
                     UPDATE products SET status = 'approved', moderator_id = %s, moderated_at = CURRENT_TIMESTAMP,
-                    channel_message_id = %s, views = 0, republish_count = 0, last_republish_date = NULL, likes_count = 0
+                    channel_message_id = %s, views = 0, republish_count = 0, last_republish_date = NULL
                     WHERE id = %s;
                 """), (call.message.chat.id, new_channel_message_id, product_id))
                 conn.commit()
@@ -1782,7 +1937,6 @@ def handle_product_moderation_callbacks(call):
 
                     original_message_for_edit = None
                     try:
-                        # Forwarding the message to the same channel to get its content (caption/text)
                         original_message_for_edit = bot.forward_message(from_chat_id=CHANNEL_ID, chat_id=CHANNEL_ID, message_id=channel_message_id)
                         if original_message_for_edit and (original_message_for_edit.text or original_message_for_edit.caption):
                             original_text = original_message_for_edit.text or original_message_for_edit.caption
@@ -1794,7 +1948,6 @@ def handle_product_moderation_callbacks(call):
                                 f"📝 *Опис:*\n{description}\n\n"
                                 f"*Цей товар вже продано.*"
                             )
-                        # Delete the forwarded message as it's just for content retrieval
                         bot.delete_message(CHANNEL_ID, original_message_for_edit.message_id) 
                     except Exception as e_fetch_original:
                         logger.warning(f"Не вдалося отримати оригінальний текст оголошення для товару {product_id} з каналу: {e_fetch_original}. Використовуємо стандартний текст.")
@@ -1840,6 +1993,10 @@ def handle_product_moderation_callbacks(call):
 
 @error_handler
 def handle_seller_sold_product(call):
+    """
+    Обробляє дію продавця "Продано" для його товару.
+    :param call: Об'єкт CallbackQuery.
+    """
     seller_chat_id = call.message.chat.id
     product_id = int(call.data.split('_')[2]) 
 
@@ -1954,7 +2111,7 @@ def handle_seller_sold_product(call):
         current_message_text = call.message.text
         updated_message_text = current_message_text.replace("📊 Статус: опубліковано", "📊 Статус: продано")
         updated_message_text_lines = updated_message_text.splitlines()
-        filtered_lines = [line for line in updated_message_text_lines if not ("👁️ Перегляди:" in line or "🔁 Переопублікувати" in line or "❌ Переопублікувати" in line or "❤️ Лайки:" in line or "✏️ Змінити ціну" in line)]
+        filtered_lines = [line for line in updated_message_text_lines if not ("👁️ Перегляди:" in line or "🔁 Переопублікувати" in line or "❌ Переопублікувати" in line or "✏️ Змінити ціну" in line)]
         updated_message_text = "\n".join(filtered_lines)
 
         bot.edit_message_text(updated_message_text, call.message.chat.id, call.message.message_id, parse_mode='Markdown', disable_web_page_preview=True)
@@ -1971,6 +2128,10 @@ def handle_seller_sold_product(call):
 
 @error_handler
 def handle_republish_product(call):
+    """
+    Обробляє запит на переопублікацію товару.
+    :param call: Об'єкт CallbackQuery.
+    """
     seller_chat_id = call.message.chat.id
     product_id = int(call.data.split('_')[1])
     republish_limit = 3 
@@ -2035,15 +2196,8 @@ def handle_republish_product(call):
             published_message = bot.send_message(CHANNEL_ID, channel_text, parse_mode='Markdown')
 
         if published_message:
-            # like_markup = types.InlineKeyboardMarkup() # Видалено кнопку "Оцініть товар"
-            # like_markup.add(types.InlineKeyboardButton("❤️ 0", callback_data=f"toggle_favorite_{product_id}_{published_message.message_id}")) 
-            
-            # like_message = bot.send_message(CHANNEL_ID, "👇 Оцініть товар!", # Видалено повідомлення "Оцініть товар"
-            #                                  reply_to_message_id=published_message.message_id, 
-            #                                  reply_markup=like_markup,
-            #                                  parse_mode='Markdown')
-
-            new_channel_message_id = published_message.message_id # Змінено на ID основного повідомлення
+            # Removed the like button and "Оцініть товар!" message
+            new_channel_message_id = published_message.message_id 
             
             new_republish_count = 1 if last_republish_date != today else current_republish_count + 1
 
@@ -2053,7 +2207,6 @@ def handle_republish_product(call):
                     views = 0, 
                     republish_count = %s, 
                     last_republish_date = %s,
-                    likes_count = 0, 
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s;
             """), (new_channel_message_id, new_republish_count, today, product_id))
@@ -2077,8 +2230,6 @@ def handle_republish_product(call):
                         new_lines.append(f"   ❌ Переопублікувати (ліміт {new_republish_count}/{republish_limit})")
                 elif "👁️ Перегляди:" in line:
                     new_lines.append(f"   👁️ Перегляди: 0") 
-                elif "❤️ Лайки:" in line:
-                    new_lines.append(f"   ❤️ Лайки: 0") 
                 else:
                     new_lines.append(line)
             updated_message_text = "\n".join(new_lines)
@@ -2116,6 +2267,10 @@ def handle_republish_product(call):
 
 @error_handler
 def handle_delete_my_product(call):
+    """
+    Обробляє запит на видалення товару продавцем.
+    :param call: Об'єкт CallbackQuery.
+    """
     seller_chat_id = call.message.chat.id
     product_id = int(call.data.split('_')[3]) 
 
@@ -2147,7 +2302,6 @@ def handle_delete_my_product(call):
             except telebot.apihelper.ApiTelegramException as e:
                 logger.warning(f"Не вдалося видалити повідомлення {channel_message_id} з каналу для товару {product_id}: {e}")
         
-        cur.execute(pg_sql.SQL("DELETE FROM favorites WHERE product_id = %s;"), (product_id,)) # Видаляємо з favorites
         cur.execute(pg_sql.SQL("DELETE FROM products WHERE id = %s;"), (product_id,))
         conn.commit()
         log_statistics('product_deleted', seller_chat_id, product_id)
@@ -2166,6 +2320,10 @@ def handle_delete_my_product(call):
 
 @error_handler
 def handle_change_price_init(call):
+    """
+    Ініціює процес зміни ціни для товару.
+    :param call: Об'єкт CallbackQuery.
+    """
     chat_id = call.message.chat.id
     product_id = int(call.data.split('_')[2]) 
 
@@ -2180,6 +2338,10 @@ def handle_change_price_init(call):
 
 @error_handler
 def process_new_price(message):
+    """
+    Обробляє введену нову ціну для товару.
+    :param message: Об'єкт Message.
+    """
     chat_id = message.chat.id
     if chat_id not in user_data or user_data[chat_id].get('flow') != 'change_price':
         bot.send_message(chat_id, "Ви не в процесі зміни ціни. Будь ласка, скористайтеся меню.", reply_markup=main_menu_markup)
@@ -2228,6 +2390,10 @@ def process_new_price(message):
 
 @error_handler
 def publish_product_to_channel(product_id):
+    """
+    Публікує або оновлює інформацію про товар в каналі.
+    :param product_id: ID товару.
+    """
     conn = get_db_connection()
     if not conn: return
     try:
@@ -2267,21 +2433,12 @@ def publish_product_to_channel(product_id):
             published_message = bot.send_message(CHANNEL_ID, channel_text, parse_mode='Markdown')
         
         if published_message:
-            # Прибрано функціонал "Оцініть товар"
-            # like_markup = types.InlineKeyboardMarkup()
-            # like_markup.add(types.InlineKeyboardButton(f"❤️ {product['likes_count']}", callback_data=f"toggle_favorite_{product_id}_{published_message.message_id}"))
-            
-            # like_message = bot.send_message(CHANNEL_ID, "👇 Оцініть товар!", 
-            #                                  reply_to_message_id=published_message.message_id, 
-            #                                  reply_markup=like_markup,
-            #                                  parse_mode='Markdown')
-
-            new_channel_message_id = published_message.message_id # Зберігаємо ID основного повідомлення
+            # Removed the like button and "Оцініть товар!" message
             cur.execute(pg_sql.SQL("""
                 UPDATE products SET status = 'approved', moderator_id = %s, moderated_at = CURRENT_TIMESTAMP,
                 channel_message_id = %s 
                 WHERE id = %s;
-            """), (ADMIN_CHAT_ID, new_channel_message_id, product_id))
+            """), (ADMIN_CHAT_ID, published_message.message_id, product_id)) # Update channel_message_id to the published_message.message_id
             conn.commit()
             
             if product['status'] == 'pending':
@@ -2295,6 +2452,10 @@ def publish_product_to_channel(product_id):
 
 @error_handler
 def handle_moderator_actions(call):
+    """
+    Обробляє дії модератора (редагування хештегів, запит на виправлення фото).
+    :param call: Об'єкт CallbackQuery.
+    """
     if call.message.chat.id != ADMIN_CHAT_ID:
         bot.answer_callback_query(call.id, "❌ Доступ заборонено.")
         return
@@ -2354,6 +2515,10 @@ def handle_moderator_actions(call):
 
 @error_handler
 def process_new_hashtags_mod(message):
+    """
+    Обробляє введені нові хештеги від модератора.
+    :param message: Об'єкт Message.
+    """
     chat_id = message.chat.id
     if chat_id != ADMIN_CHAT_ID or chat_id not in user_data or user_data[chat_id].get('flow') != 'mod_edit_tags':
         return 
@@ -2396,11 +2561,15 @@ def process_new_hashtags_mod(message):
 
 @error_handler
 def handle_toggle_favorite(call):
+    """
+    Додає/видаляє товар зі списку обраних.
+    :param call: Об'єкт CallbackQuery.
+    """
     user_chat_id = call.from_user.id
-    # Очікуємо формат callback_data: toggle_favorite_<product_id>_<message_id_в_каналі>
-    _, _, product_id_str, channel_message_id_str = call.data.split('_')
+    # Очікуємо формат callback_data: toggle_favorite_<product_id>
+    _, _, product_id_str = call.data.split('_') # Removed channel_message_id_str
     product_id = int(product_id_str)
-    channel_message_id_for_edit = int(channel_message_id_str) 
+    # channel_message_id_for_edit = int(channel_message_id_str) # Removed
 
     conn = get_db_connection()
     if not conn: 
@@ -2413,25 +2582,20 @@ def handle_toggle_favorite(call):
 
         if is_favorited:
             cur.execute(pg_sql.SQL("DELETE FROM favorites WHERE id = %s;"), (is_favorited['id'],))
-            cur.execute(pg_sql.SQL("UPDATE products SET likes_count = likes_count - 1 WHERE id = %s RETURNING likes_count;"), (product_id,))
+            # Removed likes_count update from products table
             bot.answer_callback_query(call.id, "💔 Видалено з обраного")
         else:
             cur.execute(pg_sql.SQL("INSERT INTO favorites (user_chat_id, product_id) VALUES (%s, %s);"), (user_chat_id, product_id))
-            cur.execute(pg_sql.SQL("UPDATE products SET likes_count = likes_count + 1 WHERE id = %s RETURNING likes_count;"), (product_id,))
+            # Removed likes_count update from products table
             bot.answer_callback_query(call.id, "❤️ Додано до обраного!")
         
-        likes_count = cur.fetchone()['likes_count']
         conn.commit()
 
-        # Оновлення кнопок лайків тепер відбувається лише в "Мої товари"
-        # Для оголошення в каналі кнопка "Оцініть товар" була прибрана, тому її не потрібно оновлювати.
-        # Однак, якщо ви все ж хочете, щоб лайки відображалися і в каналі (наприклад, як частина основного тексту),
-        # то це потребуватиме іншого підходу до оновлення повідомлення в каналі.
-        # Наразі, згідно з вашим запитом, кнопка "Оцініть товар" з каналу видалена.
-        # Тому код нижче для оновлення кнопки в каналі більше не потрібен.
+        # Removed message markup update in channel
+        # new_markup = types.InlineKeyboardMarkup()
+        # new_markup.add(types.InlineKeyboardButton(f"❤️ {likes_count}", callback_data=call.data)) 
+        
         # try:
-        #     new_markup = types.InlineKeyboardMarkup()
-        #     new_markup.add(types.InlineKeyboardButton(f"❤️ {likes_count}", callback_data=call.data)) 
         #     bot.edit_message_reply_markup(chat_id=CHANNEL_ID, message_id=channel_message_id_for_edit, reply_markup=new_markup)
         # except telebot.apihelper.ApiTelegramException as e:
         #     logger.warning(f"Не вдалося оновити лічильник лайків для повідомлення {channel_message_id_for_edit}: {e}")
@@ -2446,6 +2610,10 @@ def handle_toggle_favorite(call):
 
 @error_handler
 def handle_shipping_choice(call):
+    """
+    Обробляє вибір способів доставки під час додавання товару.
+    :param call: Об'єкт CallbackQuery.
+    """
     chat_id = call.message.chat.id
     if chat_id not in user_data or user_data[chat_id].get('step') != 'waiting_shipping':
         bot.answer_callback_query(call.id, "Некоректний запит.")
@@ -2488,6 +2656,10 @@ def handle_shipping_choice(call):
 
 @error_handler
 def handle_winners_menu(call):
+    """
+    Відкриває меню для перегляду переможців розіграшів.
+    :param call: Об'єкт CallbackQuery.
+    """
     text = "🏆 *Переможці розіграшів*\n\nОберіть період для перегляду топ-реферерів:"
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
@@ -2503,6 +2675,10 @@ def handle_winners_menu(call):
 
 @error_handler
 def handle_show_winners(call):
+    """
+    Показує список переможців розіграшів за обраний період.
+    :param call: Об'єкт CallbackQuery.
+    """
     period = call.data.split('_')[1] 
     intervals = {'week': 7, 'month': 30, 'year': 365}
     interval_days = intervals.get(period, 7) 
@@ -2544,6 +2720,10 @@ def handle_show_winners(call):
 
 @error_handler
 def handle_run_raffle(call):
+    """
+    Проводить розіграш серед реферерів.
+    :param call: Об'єкт CallbackQuery.
+    """
     if call.from_user.id != ADMIN_CHAT_ID:
         bot.answer_callback_query(call.id, "❌ Доступ заборонено.")
         return
@@ -2590,6 +2770,10 @@ def handle_run_raffle(call):
 @bot.callback_query_handler(func=lambda call: call.data == "admin_panel_main")
 @error_handler
 def back_to_admin_panel(call):
+    """
+    Повертає адміністратора до головної адмін-панелі.
+    :param call: Об'єкт CallbackQuery.
+    """
     if call.message.chat.id != ADMIN_CHAT_ID:
         bot.answer_callback_query(call.id, "❌ Доступ заборонено.")
         return
@@ -2610,7 +2794,6 @@ def back_to_admin_panel(call):
                           reply_markup=markup, parse_mode='Markdown')
     bot.answer_callback_query(call.id)
 
-# --- Запуск бота ---
 if __name__ == '__main__':
 
     logger.info("Бот запускається...")
@@ -2643,4 +2826,3 @@ if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8443)) 
     logger.info(f"Запуск Flask-додатка на порту {port}...")
     app.run(host="0.0.0.0", port=port) 
-
