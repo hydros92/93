@@ -1,30 +1,7 @@
-# Основні бібліотеки
+pyTelegramBotAPI
 python-dotenv
+psycopg2-binary
+aiohttp
+asyncpg
 Flask
 gunicorn
-pyTelegramBotAPI
-psycopg2-binary
-requests
-
-# Якщо використовуєш Google Gemini AI
-google-generativeai
-
-# Якщо обробляєш JSON (вбудовано, але може знадобитися)
-ujson
-
-# Для логування (опціонально, але корисно)
-loguru
-
-# Якщо використовуєш API RapidAPI або інші зовнішні сервіси
-httpx
-
-# Якщо хочеш точно зафіксувати версії (рекомендовано)
-# python-dotenv==1.1.0
-# Flask==3.0.3
-# gunicorn==23.0.0
-# pyTelegramBotAPI==4.27.0
-# psycopg2-binary==2.9.10
-# requests==2.32.4
-# google-generativeai==0.5.1
-# loguru==0.7.2
-# httpx==0.27.0
