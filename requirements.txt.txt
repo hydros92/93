@@ -1,6 +1,7 @@
-pyTelegramBotAPI[async]==4.16.2 # Обов'язково для асинхронної роботи і aiohttp
-python-dotenv==1.0.1
-psycopg2-binary==2.9.9
-aiohttp==3.9.5 # Явно вказуємо, щоб уникнути проблем
-asyncpg==0.29.0
-Flask==3.0.3
+pyTelegramBotAPI[async] # Важливо, щоб [async] був
+python-dotenv
+psycopg2-binary
+aiohttp             # Явно додано, щоб переконатися, що він встановлюється
+asyncpg
+Flask
+gunicorn     
